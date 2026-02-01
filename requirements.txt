@@ -1,0 +1,6 @@
+streamlit
+yfinance
+pandas
+duckduckgo-search
+openai
+fpdf
