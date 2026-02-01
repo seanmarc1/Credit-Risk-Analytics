@@ -4,3 +4,4 @@ pandas
 duckduckgo-search
 openai
 fpdf
+plotly

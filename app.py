@@ -11,26 +11,39 @@ try:
 except ImportError:
     FPDF_AVAILABLE = False
 
+try:
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+
 # ============================================================================
 # PAGE CONFIG
 # ============================================================================
 st.set_page_config(
-    page_title="Due Diligence Tool", 
+    page_title="Credit Risk Analytics", 
     layout="wide",
     page_icon="📊"
 )
 
-st.title("📊 Financial Due Diligence Dashboard")
-st.markdown("### Institutional-Grade Credit Risk Analysis")
+st.title("📊 Credit Risk Analytics Dashboard")
+st.markdown("### Institutional-Grade Altman Z-Score Analysis")
 
 # ============================================================================
 # SIDEBAR
 # ============================================================================
 st.sidebar.header("⚙️ Configuration")
 api_key = st.sidebar.text_input("OpenAI API Key (Optional)", type="password")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ⚡ Stress Test Mode")
+revenue_shock = st.sidebar.slider("Simulate Revenue Drop (%)", 0, 50, 0)
+if revenue_shock > 0:
+    st.sidebar.warning(f"⚠️ Simulating {revenue_shock}% revenue decline!")
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("**About**")
-st.sidebar.caption("This tool calculates the Altman Z-Score (Manufacturing) or Z'' (Non-Manufacturing) based on sector classification.")
+st.sidebar.caption("Z-Score (Manufacturing) or Z'' (Non-Manufacturing) selected automatically based on sector.")
 
 # ============================================================================
 # PDF GENERATION
@@ -94,7 +107,6 @@ def generate_pdf_memo(ticker, metadata, z_score, risk_cat, formula, metrics, ana
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 8, "Risk Intelligence Summary", ln=True)
     pdf.set_font("Arial", "", 9)
-    # Truncate if too long
     news_text = news_summary[:500] + "..." if len(news_summary) > 500 else news_summary
     pdf.multi_cell(0, 5, news_text)
     pdf.ln(5)
@@ -106,8 +118,51 @@ def generate_pdf_memo(ticker, metadata, z_score, risk_cat, formula, metrics, ana
         pdf.set_font("Arial", "", 9)
         pdf.multi_cell(0, 5, analyst_notes)
     
-    # Output
     return pdf.output(dest='S').encode('latin-1')
+
+
+# ============================================================================
+# PLOTLY CHART
+# ============================================================================
+def create_attribution_chart(weighted_contributions, formula_used):
+    """Creates a horizontal bar chart showing Z-Score factor contributions."""
+    if not PLOTLY_AVAILABLE or not weighted_contributions:
+        return None
+    
+    # Labels for better readability
+    labels_map = {
+        "X1": "X1: Liquidity (WC/TA)",
+        "X2": "X2: Leverage (RE/TA)",
+        "X3": "X3: Profitability (EBIT/TA)",
+        "X4": "X4: Solvency (Equity/Liab)",
+        "X5": "X5: Efficiency (Sales/TA)"
+    }
+    
+    factors = [labels_map.get(k, k) for k in weighted_contributions.keys()]
+    values = list(weighted_contributions.values())
+    
+    # Color logic: positive = green, negative = red
+    colors = ['#2E8B57' if v >= 0 else '#CD5C5C' for v in values]
+    
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=factors,
+        orientation='h',
+        marker_color=colors,
+        text=[f"{v:.2f}" for v in values],
+        textposition='auto'
+    ))
+    
+    fig.update_layout(
+        title=f"Z-Score Attribution: What's Driving the Risk? ({formula_used})",
+        xaxis_title="Contribution to Total Score",
+        template="plotly_white",
+        height=350,
+        margin=dict(l=20, r=20, t=50, b=20),
+        xaxis=dict(showgrid=True, gridcolor='lightgrey'),
+    )
+    
+    return fig
 
 
 # ============================================================================
@@ -127,7 +182,6 @@ if st.button("🔍 Analyze", type="primary"):
     else:
         for ticker in tickers:
             with st.expander(f"📈 Analysis for {ticker}", expanded=True):
-                col1, col2 = st.columns([1, 1])
                 
                 # Fetch Financial Data
                 with st.spinner(f"Fetching data for {ticker}..."):
@@ -139,11 +193,20 @@ if st.button("🔍 Analyze", type="primary"):
                 
                 metadata = data.get('_metadata', {})
                 
-                # Calculate Z-Score (updated function returns 3 values)
-                z_score, risk_cat, formula = fd.calculate_altman_z_score(data)
+                # Calculate Z-Score (with stress test if enabled)
+                z_score, risk_cat, formula, contributions = fd.calculate_altman_z_score(
+                    data, revenue_shock_pct=revenue_shock
+                )
+                
+                # Layout: Two columns
+                col1, col2 = st.columns([1, 1])
                 
                 with col1:
-                    st.subheader("📊 Financial Health")
+                    st.subheader("📊 Credit Risk Assessment")
+                    
+                    # Stress Test Warning
+                    if revenue_shock > 0:
+                        st.warning(f"⚠️ STRESS TEST: {revenue_shock}% revenue reduction applied!")
                     
                     # Freshness Warning
                     if metadata.get('freshness_warning'):
@@ -153,21 +216,18 @@ if st.button("🔍 Analyze", type="primary"):
                     st.caption(f"**Sector:** {metadata.get('sector', 'N/A')} | **Formula:** {formula or 'N/A'}")
                     
                     if z_score is not None:
-                        # Z-Score Metric
-                        delta_color = "normal"
-                        if risk_cat == "Distress Zone":
-                            delta_color = "inverse"
+                        # Z-Score Metric with large display
                         st.metric("Altman Z-Score", f"{z_score:.4f}")
                         
                         # Risk Badge
                         if risk_cat == "Safe Zone":
-                            st.success(f"🟢 {risk_cat}")
+                            st.success(f"🟢 {risk_cat} — Low bankruptcy risk")
                         elif risk_cat == "Grey Zone":
-                            st.warning(f"🟡 {risk_cat}")
+                            st.warning(f"🟡 {risk_cat} — Moderate risk, monitor closely")
                         else:
-                            st.error(f"🔴 {risk_cat}")
+                            st.error(f"🔴 {risk_cat} — High bankruptcy probability")
                         
-                        # Key Metrics Display
+                        # Key Metrics Table
                         st.markdown("#### Key Metrics (Millions)")
                         metrics_df = pd.DataFrame([
                             {"Metric": k, "Value (M)": f"{v:,.2f}" if v else "N/A"}
@@ -177,8 +237,22 @@ if st.button("🔍 Analyze", type="primary"):
                     else:
                         st.error(f"Could not calculate Z-Score: {risk_cat}")
 
-                # AI News Analysis
+                # Attribution Chart
                 with col2:
+                    st.subheader("📉 Risk Factor Attribution")
+                    if PLOTLY_AVAILABLE and contributions:
+                        fig = create_attribution_chart(contributions, formula)
+                        st.plotly_chart(fig, use_container_width=True)
+                    elif not PLOTLY_AVAILABLE:
+                        st.info("Install `plotly` for attribution charts: `pip install plotly`")
+                    else:
+                        st.info("Attribution data not available.")
+
+                # AI News Analysis
+                st.markdown("---")
+                col_news, col_notes = st.columns([1, 1])
+                
+                with col_news:
                     st.subheader("🔎 AI Risk Intelligence")
                     with st.spinner(f"Searching news for {ticker}..."):
                         snippets = na.get_news_snippets(ticker)
@@ -190,23 +264,22 @@ if st.button("🔍 Analyze", type="primary"):
                         if not api_key:
                             st.caption("💡 Enter OpenAI API Key in sidebar for AI summarization.")
                 
-                # ============================================================
-                # PHASE 3: ANALYST NOTES
-                # ============================================================
-                st.markdown("---")
-                st.subheader("📝 Analyst Notes")
-                
-                notes_key = f"notes_{ticker}"
-                analyst_notes = st.text_area(
-                    f"Add qualitative observations for {ticker}:",
-                    value=st.session_state.analyst_notes.get(ticker, ""),
-                    height=100,
-                    placeholder="e.g., Recent management change, upcoming debt maturity, litigation concerns...",
-                    key=notes_key
-                )
-                st.session_state.analyst_notes[ticker] = analyst_notes
+                # Analyst Notes
+                with col_notes:
+                    st.subheader("📝 Analyst Notes")
+                    
+                    notes_key = f"notes_{ticker}"
+                    analyst_notes = st.text_area(
+                        f"Qualitative observations for {ticker}:",
+                        value=st.session_state.analyst_notes.get(ticker, ""),
+                        height=150,
+                        placeholder="e.g., Recent management restructuring, exposure to interest rate environment, upcoming debt maturity...",
+                        key=notes_key
+                    )
+                    st.session_state.analyst_notes[ticker] = analyst_notes
                 
                 # PDF Export Button
+                st.markdown("---")
                 if FPDF_AVAILABLE and z_score is not None:
                     if st.button(f"📄 Generate Risk Memo PDF for {ticker}", key=f"pdf_{ticker}"):
                         pdf_bytes = generate_pdf_memo(
@@ -228,7 +301,7 @@ if st.button("🔍 Analyze", type="primary"):
                                 key=f"download_{ticker}"
                             )
                 elif not FPDF_AVAILABLE:
-                    st.caption("⚠️ Install `fpdf` to enable PDF export: `pip install fpdf`")
+                    st.caption("⚠️ Install `fpdf` to enable PDF export.")
 
 st.markdown("---")
-st.caption("Financial data provided by yfinance. Credit models based on Altman Z-Score methodology.")
+st.caption("Credit models based on Altman Z-Score methodology. Financial data provided by yfinance.")

@@ -153,17 +153,21 @@ def get_financial_data(ticker):
         return None
 
 
-def calculate_altman_z_score(data):
+def calculate_altman_z_score(data, revenue_shock_pct=0):
     """
     Calculates Altman Z-Score, dynamically choosing between:
     - Z (Manufacturing): 1.2A + 1.4B + 3.3C + 0.6D + 1.0E
     - Z'' (Non-Manufacturing): 6.56A + 3.26B + 6.72C + 1.05D (no Sales component)
     
+    Args:
+        data: Financial data dict from get_financial_data()
+        revenue_shock_pct: Optional revenue reduction for stress testing (0-100)
+    
     Returns:
-        Tuple: (z_score, risk_category, formula_used)
+        Tuple: (z_score, risk_category, formula_used, weighted_contributions)
     """
     if not data:
-        return None, "No Data", None
+        return None, "No Data", None, None
 
     try:
         metadata = data.get('_metadata', {})
@@ -183,7 +187,12 @@ def calculate_altman_z_score(data):
         
         ebit = data.get('EBIT')
         if ebit is None:
-            return None, "Missing EBIT", None
+            return None, "Missing EBIT", None, None
+        
+        # Apply revenue shock if stress testing
+        revenue = data.get('Total Revenue')
+        if revenue and revenue_shock_pct > 0:
+            revenue = revenue * (1 - revenue_shock_pct / 100)
         
         # Common ratios
         A = working_capital / total_assets
@@ -204,8 +213,21 @@ def calculate_altman_z_score(data):
             
             D = bve / total_liabilities
             
-            z_score = (6.56 * A) + (3.26 * B) + (6.72 * C) + (1.05 * D)
+            # Weighted contributions
+            contrib_X1 = 6.56 * A
+            contrib_X2 = 3.26 * B
+            contrib_X3 = 6.72 * C
+            contrib_X4 = 1.05 * D
+            
+            z_score = contrib_X1 + contrib_X2 + contrib_X3 + contrib_X4
             formula_used = "Z'' (Non-Manufacturing)"
+            
+            weighted_contributions = {
+                "X1": contrib_X1,
+                "X2": contrib_X2,
+                "X3": contrib_X3,
+                "X4": contrib_X4
+            }
             
             # Z'' thresholds are different
             if z_score > 2.6:
@@ -221,15 +243,30 @@ def calculate_altman_z_score(data):
             sales = data.get('Total Revenue')
             
             if mve is None or total_liabilities is None or total_liabilities == 0:
-                return None, "Missing MVE or Liabilities", None
-            if sales is None:
-                return None, "Missing Sales", None
+                return None, "Missing MVE or Liabilities", None, None
+            if revenue is None:
+                return None, "Missing Sales", None, None
             
             D = mve / total_liabilities
-            E = sales / total_assets
+            E = revenue / total_assets
             
-            z_score = (1.2 * A) + (1.4 * B) + (3.3 * C) + (0.6 * D) + (1.0 * E)
+            # Weighted contributions
+            contrib_X1 = 1.2 * A
+            contrib_X2 = 1.4 * B
+            contrib_X3 = 3.3 * C
+            contrib_X4 = 0.6 * D
+            contrib_X5 = 1.0 * E
+            
+            z_score = contrib_X1 + contrib_X2 + contrib_X3 + contrib_X4 + contrib_X5
             formula_used = "Z (Manufacturing)"
+            
+            weighted_contributions = {
+                "X1": contrib_X1,
+                "X2": contrib_X2,
+                "X3": contrib_X3,
+                "X4": contrib_X4,
+                "X5": contrib_X5
+            }
             
             if z_score > 3.0:
                 risk_category = "Safe Zone"
@@ -238,10 +275,10 @@ def calculate_altman_z_score(data):
             else:
                 risk_category = "Distress Zone"
             
-        return z_score, risk_category, formula_used
+        return z_score, risk_category, formula_used, weighted_contributions
 
     except Exception as e:
-        return None, f"Calculation Error: {e}", None
+        return None, f"Calculation Error: {e}", None, None
 
 
 if __name__ == "__main__":
@@ -264,9 +301,13 @@ if __name__ == "__main__":
                 if key != '_metadata' and val is not None:
                     print(f"  {key}: {val:,.2f}M")
             
-            z, risk, formula = calculate_altman_z_score(data)
+            z, risk, formula, contributions = calculate_altman_z_score(data)
             print(f"\nFormula Used: {formula}")
             print(f"Z-Score: {z:.4f}" if z else f"Z-Score: {z}")
             print(f"Risk Category: {risk}")
+            if contributions:
+                print(f"\nWeighted Contributions:")
+                for factor, contrib in contributions.items():
+                    print(f"  {factor}: {contrib:.4f}")
         else:
             print("Failed to fetch data.")
